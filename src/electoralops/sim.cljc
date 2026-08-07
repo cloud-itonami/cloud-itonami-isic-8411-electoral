@@ -1,0 +1,74 @@
+(ns electoralops.sim
+  "Demo driver —— 1 つの clean な受領ライフサイクルと、5 つの HARD-hold ケースを
+  実際に actor へ通す。
+
+    clojure -M:dev:run
+
+  ここで見せたいのは『動く』ことではなく、**止まる**ことである。受領側の
+  actor が黙って通してしまうと最も危ういのは、期限を確認できないまま受理する
+  ことと、形式審査が終わらないうちに受理台帳へ載せることの 2 つで、
+  どちらもこのデモで HOLD になる。"
+  (:require [langgraph.graph :as g]
+            [electoralops.operation :as op]
+            [electoralops.store :as store]))
+
+(def ^:private operator
+  {:actor-id "clerk-1" :actor-role :electoral-officer :phase 3
+   :anchors store/demo-anchors})
+
+(defn- exec! [actor tid request]
+  (g/run* actor {:request request :context operator} {:thread-id tid}))
+
+(defn- approve! [actor tid]
+  (g/run* actor {:approval {:status :approved :by "clerk-1"}}
+          {:thread-id tid :resume? true}))
+
+(defn- pad
+  "`format` は .cljc で使えない（cljs に無い）ので自前で右詰めする。"
+  [s w]
+  (let [s (str s)]
+    (str s (apply str (repeat (max 0 (- w (count s))) " ")))))
+
+(defn- show [label res]
+  (println (str (pad label 46) " -> "
+                (or (get-in res [:state :disposition]) (:status res)))))
+
+(defn -main [& _]
+  (let [db (store/seed-db)
+        actor (op/build db)]
+    (println "\n== cloud-itonami-isic-8411-electoral demo ==\n")
+
+    (show "1. 受付記録の更新 (auto 可)"
+          (exec! actor "s1" {:op :filing/receive :subject "filing-1"
+                            :patch {:id "filing-1" :filing-name "candidacy-filing-A"}}))
+
+    (show "2. 形式審査 (clean, 承認待ち)"
+          (exec! actor "s2" {:op :review/formal :subject "filing-1"}))
+    (show "   -> 承認後" (approve! actor "s2"))
+
+    (show "3. 受理台帳へ登載 (clean, 必ず承認待ち)"
+          (exec! actor "s3" {:op :actuation/publish-receipt :subject "filing-1"}))
+    (show "   -> 承認後" (approve! actor "s3"))
+
+    (println "\n-- HARD holds (承認では通せない) --\n")
+
+    (show "4. 同じ届出の二重受理"
+          (exec! actor "s4" {:op :actuation/publish-receipt :subject "filing-1"}))
+
+    (show "5. 期限徒過の収支報告を受理"
+          (exec! actor "s5" {:op :actuation/publish-receipt :subject "filing-2"}))
+
+    (show "6. 形式審査が未了のまま登載"
+          (exec! actor "s6" {:op :actuation/publish-receipt :subject "filing-3"}))
+
+    (show "7. 未収録法域の手続きを審査"
+          (exec! actor "s7" {:op :review/formal :subject "filing-4"}))
+
+    (show "8. 選管が受領者でない手続き (供託=法務局)"
+          (exec! actor "s8" {:op :actuation/publish-receipt :subject "filing-5"}))
+
+    (println "\n-- 監査台帳 --\n")
+    (doseq [f (store/ledger db)]
+      (println (str "  " (pad (:t f) 22) " " (pad (:op f) 28) " " (pr-str (:basis f)))))
+    (println (str "\n受理台帳: " (pr-str (mapv #(get % "record_id") (store/receipt-history db)))))
+    (println)))

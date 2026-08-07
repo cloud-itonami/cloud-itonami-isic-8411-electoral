@@ -1,0 +1,13 @@
+{:itonami.blueprint/id "cloud-itonami-isic-8411-electoral"
+ :itonami.blueprint/name "Electoral Administration — Filing Receipt and Formal Review"
+ :itonami.blueprint/isic-rev5 "8411"
+ :itonami.blueprint/isic-subject :electoral-administration
+ :itonami.blueprint/domain :public/electoral-administration
+ :itonami.blueprint/license "AGPL-3.0-or-later"
+ :itonami.blueprint/social-impact [:civic-access :transparency :accountability]
+ :itonami.blueprint/governor :electoral-administration-governor
+ :itonami.blueprint/robotics true
+ :itonami.blueprint/required-technologies [:robotics :identity :forms :dmn :bpmn :audit-ledger]
+ :itonami.blueprint/optional-technologies []
+ :itonami.blueprint/status :public-oss
+ :itonami.blueprint/maturity :implemented}

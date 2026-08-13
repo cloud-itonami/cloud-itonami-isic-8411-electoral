@@ -12,10 +12,17 @@
  ;; other direction — deliberately, so a discrepancy between what a
  ;; campaign is told to submit and what an authority is told to receive
  ;; cannot arise from two divergent copies.
+ ;; jp-go-digital-design-system is the workspace-wide BASE design system;
+ ;; the build-time console renderer uses its compat skin so the generated
+ ;; page needs no hand-written CSS. Pinned by git sha (not :local/root) so
+ ;; a standalone fork resolves it too.
  :deps {io.github.kotoba-lang/langgraph
         {:local/root "../../kotoba-lang/langgraph"}
         io.github.kotoba-lang/senkyo
-        {:local/root "../../kotoba-lang/senkyo"}}
+        {:local/root "../../kotoba-lang/senkyo"}
+        io.github.kotoba-lang/jp-go-digital-design-system
+        {:git/url "https://github.com/kotoba-lang/jp-go-digital-design-system"
+         :git/sha "83db99546eabc53613ae826ea41d1533a3c574af"}}
  :aliases
  {;; offline workspace dev -- pin transitive langchain to local checkout
   :dev {:override-deps
@@ -23,6 +30,11 @@
          {:local/root "../../kotoba-lang/langchain"}}}
   ;; clojure -M:dev:run  -> drive the demo through one OperationActor
   :run {:main-opts ["-m" "electoralops.sim"]}
+  ;; clojure -M:render-html [out-file] -> regenerate
+  ;; docs/samples/operator-console.html by running the REAL actor
+  ;; (flagship checklist item 2). Refuses to write the file if the run
+  ;; produced no hard governor holds.
+  :render-html {:main-opts ["-m" "electoralops.render-html"]}
   :test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
                       {:git/tag "v0.5.1" :git/sha "dfb30dd"}}

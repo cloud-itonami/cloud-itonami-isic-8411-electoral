@@ -1,0 +1,573 @@
+(ns electoralops.render-html
+  "Build-time HTML renderer for `docs/samples/operator-console.html`.
+
+  Closes flagship checklist item 2 for this repo: there was previously NO
+  demo page and no generator at all. Every row on the page is produced by
+  driving the REAL actor stack — `electoralops.operation` (langgraph
+  StateGraph) -> `electoralops.governor` -> `electoralops.store` — over
+  the repo's own seeded filing set (`electoralops.store/demo-data`,
+  `filing-1`..`filing-5`). Nothing on the page is hand-typed telemetry:
+  the deadline column is the governor's own independent recompute
+  (`governor/deadline-ground-truth`), the rollout table is
+  `electoralops.phase/phases` itself, and every hold row is a ledger fact
+  the governor actually wrote.
+
+  ## Three kinds of refusal, kept apart on purpose
+
+  A naive hold count is wrong here, because this actor can stop for three
+  structurally different reasons and only one of them is the governor
+  refusing:
+
+  1. **HARD governor hold** — `:t :governor-hold` with a NON-EMPTY
+     `:violations`. A human approver cannot override it; the run never
+     reaches `:request-approval` at all.
+  2. **Rollout phase gate** — also `:t :governor-hold`, but with an EMPTY
+     `:violations` and a `:phase-reason` (`:phase-disabled`). The governor
+     was clean; the op simply is not enabled at that phase yet. Counting
+     these as governor refusals would inflate the number and hide the fact
+     that nothing was actually wrong with the filing.
+  3. **Human approver refusal** — `:t :approval-rejected`. The governor was
+     clean, the phase allowed it, a human electoral officer said no.
+
+  They get three separate tables, and `-main` counts only (1) toward the
+  build-time invariant.
+
+  ## Build-time invariant
+
+  `-main` REFUSES to write the file if the run produced zero HARD governor
+  holds, zero commits, or a ledger fact naming a subject that is not in the
+  seeded filing directory. A console that shows only green paths would be
+  advertising an ungoverned actor, and a console naming an id that is not
+  in the seed data would be advertising fiction; neither is allowed to
+  reach `docs/`.
+
+  ## Approver attribution is MEASURED, not assumed
+
+  Whether the approving officer survives into the committed record is
+  determined at render time by deep-scanning the actual stored record for
+  approver-named keys (`approver-entries`), per approval, keyed by the
+  approval's own thread-id. It is deliberately NOT derived by joining
+  records to approvals on `[op subject]`: `filing-1` is formally reviewed
+  AND entered in the register in this scenario, so a subject-keyed join
+  would let one record inherit the other's approver. The disclosure
+  self-corrects the day the store starts retaining the approver — no
+  current-behaviour string is baked in.
+
+  Deterministic: no timestamps, no randomness, sorted iteration
+  throughout — two runs against the same seed are byte-identical.
+
+  Usage: `clojure -M:render-html [out-file]`
+  (default `docs/samples/operator-console.html`)."
+  (:require [clojure.string :as str]
+            [clojure.walk :as walk]
+            [jp-go-dds.skin]
+            [electoralops.governor :as governor]
+            [electoralops.intake :as intake]
+            [electoralops.operation :as op]
+            [electoralops.phase :as phase]
+            [electoralops.store :as store]
+            [langgraph.graph :as g]))
+
+(def ^:private clerk "clerk-1")
+
+(defn- ctx
+  "An execution context. `:anchors` is per-run on purpose — 選挙ごとに
+  基準日が違うので、期限の再計算に使う基準日は actor の設定ではなく
+  その実行の文脈として渡す（`electoralops.operation` docstring）."
+  [phase anchors]
+  {:actor-id clerk :actor-role :electoral-officer :phase phase :anchors anchors})
+
+(def ^:private live (ctx 3 store/demo-anchors))
+
+;; ----------------------------- the real run -----------------------------
+
+(defn run-demo!
+  "Drives one fresh seeded store through every disposition this actor can
+  reach, and returns `{:db store :approvals [..]}`.
+
+  Order matters and is load-bearing: the `:unresolved`-deadline attempt on
+  `filing-1` runs BEFORE `filing-1` is entered in the register, so that
+  hold carries exactly one violation (the deadline) instead of also
+  tripping `:already-published`. Each approval handoff gets its own
+  thread-id so the attribution disclosure below can key on it.
+
+  Committed paths
+    filing-1 `:filing/receive`            phase-3 auto-commit (governor clean,
+                                          receipt of the record itself does not
+                                          affect a candidate's standing)
+    filing-1 `:review/formal`             escalate (never auto at ANY phase) -> approved
+    filing-3 `:deficiency/notice`         escalate -> approved (4 項目中 1 項目のみ充足)
+    filing-1 `:actuation/publish-receipt` escalate (permanently high-stakes) -> approved
+
+  Human refusal
+    filing-1 `:deficiency/notice`         clean, escalated, officer REFUSES —
+                                          filing-1 has no outstanding items, so
+                                          sending a correction demand would put a
+                                          spurious burden on a candidate
+
+  HARD governor holds (a human approver cannot override any of these)
+    filing-1 no anchors  -> :filing-deadline-not-satisfied (status :unresolved)
+    filing-1 out-of-scope intent -> :out-of-scope-intent (:candidate-assessment)
+    filing-1 二重受理     -> :already-published
+    filing-2             -> :filing-deadline-not-satisfied (status :past)
+    filing-3             -> :formal-review-incomplete
+    filing-4             -> :no-procedure-basis (+ deadline :no-basis)
+    filing-5             -> :wrong-receiving-authority (供託は法務局が受ける)
+
+  Rollout phase gate (governor CLEAN, empty :violations)
+    filing-3 `:review/formal`  at phase 1 -> :phase-disabled
+    filing-1 `:filing/receive` at phase 0 -> :phase-disabled"
+  []
+  (let [db (store/seed-db)
+        actor (op/build db)
+        approvals (atom [])
+        exec! (fn exec!
+                ([tid request] (exec! tid request live))
+                ([tid request context]
+                 (g/run* actor {:request request :context context} {:thread-id tid})))
+        decide! (fn [tid op subject status]
+                  (let [res (g/run* actor {:approval {:status status :by clerk}}
+                                    {:thread-id tid :resume? true})]
+                    (swap! approvals conj
+                           {:thread-id tid :op op :subject subject
+                            :submitted-by clerk :status status
+                            :disposition (get-in res [:state :disposition])})
+                    res))]
+
+    ;; --- 受付記録（phase 3 で auto-commit しうる唯一の op）
+    (exec! "a1" {:op :filing/receive :subject "filing-1"
+                 :patch {:id "filing-1" :filing-name "candidacy-filing-A"
+                         :status :received}})
+
+    ;; --- 基準日を渡さない受理の試み: 「確認できない」を「期限内」に丸めない
+    (exec! "h1" {:op :actuation/publish-receipt :subject "filing-1"}
+           (ctx 3 {}))
+
+    ;; --- 形式審査（どの phase でも auto にならない）
+    (exec! "a2" {:op :review/formal :subject "filing-1"})
+    (decide! "a2" :review/formal "filing-1" :approved)
+
+    ;; --- 実質判断への滑り（候補者の評価）は構造的に不在
+    (exec! "h2" {:op :review/formal :subject "filing-1"
+                 :intents [:candidate-assessment]})
+
+    ;; --- 受理台帳への登載（clean でも必ず人を通す）
+    (exec! "a3" {:op :actuation/publish-receipt :subject "filing-1"})
+    (decide! "a3" :actuation/publish-receipt "filing-1" :approved)
+
+    ;; --- 二重受理
+    (exec! "h3" {:op :actuation/publish-receipt :subject "filing-1"})
+
+    ;; --- 期限徒過の収支報告
+    (exec! "h4" {:op :actuation/publish-receipt :subject "filing-2"})
+
+    ;; --- 形式審査未了のままの登載
+    (exec! "h5" {:op :actuation/publish-receipt :subject "filing-3"})
+
+    ;; --- その不備を通知する（正当な出口）
+    (exec! "a4" {:op :deficiency/notice :subject "filing-3"})
+    (decide! "a4" :deficiency/notice "filing-3" :approved)
+
+    ;; --- 不備の無い届出への通知は職員が止める
+    (exec! "r1" {:op :deficiency/notice :subject "filing-1"})
+    (decide! "r1" :deficiency/notice "filing-1" :rejected)
+
+    ;; --- 未収録法域の手続き
+    (exec! "h6" {:op :review/formal :subject "filing-4"})
+
+    ;; --- 選管が受領者でない手続き（供託 = 法務局）
+    (exec! "h7" {:op :actuation/publish-receipt :subject "filing-5"})
+
+    ;; --- ロールアウト phase ゲート（governor は clean）
+    (exec! "p1" {:op :review/formal :subject "filing-3"} (ctx 1 store/demo-anchors))
+    (exec! "p2" {:op :filing/receive :subject "filing-1"
+                 :patch {:id "filing-1" :status :received}}
+           (ctx 0 store/demo-anchors))
+
+    {:db db :approvals @approvals}))
+
+;; ----------------------------- classification -----------------------------
+
+(defn hard-holds
+  "Ledger facts where the GOVERNOR refused: a `:governor-hold` carrying at
+  least one violation and no `:phase-reason`. This is the only bucket that
+  counts toward the build-time invariant."
+  [ledger]
+  (filterv #(and (= :governor-hold (:t %))
+                 (seq (:violations %))
+                 (nil? (:phase-reason %)))
+           ledger))
+
+(defn phase-holds
+  "Ledger facts where the ROLLOUT PHASE stopped a governor-clean op. These
+  carry an empty `:violations`, which is exactly why they must not be
+  counted as refusals."
+  [ledger]
+  (filterv #(and (= :governor-hold (:t %)) (some? (:phase-reason %))) ledger))
+
+(defn approver-refusals
+  "Ledger facts where a human electoral officer refused at the approval
+  handoff."
+  [ledger]
+  (filterv #(= :approval-rejected (:t %)) ledger))
+
+(defn commits [ledger] (filterv #(= :committed (:t %)) ledger))
+
+;; ----------------------------- approver attribution -----------------------------
+
+(defn approver-entries
+  "Deep-scan a committed record for keys that NAME an approver.
+
+  Deliberately structural rather than a lookup of one known key: if the
+  store starts retaining the approver under any name, this disclosure
+  starts reporting it without an edit here."
+  [record]
+  (let [found (volatile! [])]
+    (walk/postwalk
+     (fn [x]
+       (when (map? x)
+         (doseq [[k v] x]
+           (when (re-find #"(?i)approv" (str k))
+             (vswap! found conj [k v]))))
+       x)
+     record)
+    (vec (sort-by (comp str first) @found))))
+
+(defn committed-record-for
+  "The SSoT record an approved op actually wrote, resolved through that
+  op's own effect accessor.
+
+  NOT a `[op subject]` join over the ledger: `filing-1` is both formally
+  reviewed and entered in the register in this scenario, so a
+  subject-keyed join would happily let the receipt inherit the formal
+  review's approver and report a defect that does not exist."
+  [db {:keys [op subject]}]
+  (case op
+    :review/formal     {:where "store/formal-review-of" :record (store/formal-review-of db subject)}
+    :deficiency/notice {:where "store/deficiency-of"    :record (store/deficiency-of db subject)}
+    :filing/receive    {:where "store/filing"           :record (store/filing db subject)}
+    :actuation/publish-receipt
+    {:where "store/receipt-history"
+     :record (first (filter #(= subject (get % "filing_id")) (store/receipt-history db)))}
+    {:where "—" :record nil}))
+
+(defn ledger-fact-for
+  "The committed ledger fact for an approved op, with an explicit
+  ambiguity guard: if `[op subject]` matches more than one committed fact
+  the answer is reported as ambiguous rather than guessed."
+  [ledger {:keys [op subject]}]
+  (let [ms (filter #(and (= :committed (:t %)) (= op (:op %)) (= subject (:subject %))) ledger)]
+    (if (< 1 (count ms)) {:ambiguous (count ms)} (first ms))))
+
+;; ----------------------------- rendering -----------------------------
+
+(defn- esc [v]
+  (-> (str v)
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")))
+
+(defn- kw->s [k] (if (keyword? k) (subs (str k) 1) (str k)))
+
+(defn- code [v] (str "<code>" (esc v) "</code>"))
+
+(defn- join-basis [basis]
+  (if (seq basis) (str/join ", " (map kw->s basis)) "—"))
+
+(defn- span [cls s] (str "<span class=\"" cls "\">" s "</span>"))
+
+(defn- row [& cells]
+  (str "        <tr>" (apply str (map #(str "<td>" % "</td>") cells)) "</tr>"))
+
+(defn- table [headers rows]
+  (str "    <table>\n"
+       "      <thead><tr>" (apply str (map #(str "<th>" % "</th>") headers)) "</tr></thead>\n"
+       "      <tbody>\n"
+       (if (seq rows) (str (str/join "\n" rows) "\n") "")
+       "      </tbody>\n"
+       "    </table>\n"))
+
+(defn- section [title lead body]
+  (str "  <section class=\"card\">\n"
+       "    <h2>" title "</h2>\n"
+       "    <p class=\"muted\">" lead "</p>\n"
+       body
+       "  </section>\n"))
+
+;; --- filings
+
+(defn- deadline-cell [f]
+  (let [{:keys [status within?]} (governor/deadline-ground-truth f store/demo-anchors)
+        due (intake/due (:jurisdiction f) (:procedure-id f) store/demo-anchors)]
+    (str (span (if within? "ok" "critical") (esc (kw->s status)))
+         "<br>" (span "muted" (str "期限 " (esc (if (keyword? due) (kw->s due) due))
+                                   " / 提出 " (esc (:submitted-epoch-day f)))))))
+
+(defn- review-cell [f]
+  (let [items (intake/formal-review-items (:jurisdiction f) (:procedure-id f))
+        outstanding (intake/outstanding-review-items f)]
+    (cond
+      (nil? items) (span "critical" "spec-basis 無し")
+      (empty? outstanding) (span "ok" (str "充足 " (count items) "/" (count items)))
+      :else (str (span "warn" (str "充足 " (- (count items) (count outstanding))
+                                   "/" (count items)))
+                 "<br>" (span "muted" (esc (str/join " / " outstanding)))))))
+
+(defn- register-cell [f]
+  (if (:published? f)
+    (span "ok" (str "登載済 " (code (:receipt-number f))))
+    (span "muted" "未登載")))
+
+(defn- last-fact-cell [ledger id]
+  (let [f (last (filter #(= id (:subject %)) ledger))]
+    (cond
+      (nil? f) (span "muted" "no activity")
+      (= :committed (:t f)) (span "ok" (str "committed &middot; " (esc (kw->s (:op f)))))
+      (= :approval-rejected (:t f)) (span "warn" "承認者が却下")
+      (and (= :governor-hold (:t f)) (seq (:violations f)))
+      (span "critical" (str "HARD hold &middot; " (esc (join-basis (:basis f)))))
+      (= :governor-hold (:t f)) (span "warn" (str "phase gate &middot; " (esc (kw->s (:phase-reason f)))))
+      :else (span "muted" "in progress"))))
+
+(defn- filing-row [ledger f]
+  (row (code (:id f))
+       (esc (:filing-name f))
+       (str (esc (:jurisdiction f)) " / " (code (kw->s (:procedure-id f))))
+       (let [p (intake/procedure-basis (:jurisdiction f) (:procedure-id f))]
+         (if p
+           (str (esc (:proc/authority p)) "<br>"
+                (if (intake/receivable-here? (:jurisdiction f) (:procedure-id f))
+                  (span "ok" "この actor の受領対象")
+                  (span "critical" "受領対象外")))
+           (span "critical" "senkyo.procedure に未収録")))
+       (deadline-cell f)
+       (review-cell f)
+       (register-cell f)
+       (last-fact-cell ledger (:id f))))
+
+;; --- rollout phases / op gate
+
+(defn- set-cell [s]
+  (if (seq s)
+    (str/join " " (map #(code (kw->s %)) (sort-by str s)))
+    (span "muted" "なし")))
+
+(defn- phase-row [[n {:keys [label writes auto]}]]
+  (row (str (code n) (when (= n phase/default-phase) (str " " (span "badge" "この実行"))))
+       (esc label)
+       (set-cell writes)
+       (set-cell auto)))
+
+(defn- op-gate-row [op]
+  (let [{:keys [writes auto]} (get phase/phases phase/default-phase)]
+    (row (code (kw->s op))
+         (if (contains? writes op) (span "ok" "許可") (span "critical" "不許可"))
+         (cond
+           (contains? governor/high-stakes op)
+           (span "critical" "ALWAYS 人手承認 &middot; どの phase でも auto にならない")
+           (contains? auto op)
+           (span "ok" "governor clean なら auto-commit")
+           :else
+           (span "warn" "人手承認（この phase では auto 対象外）")))))
+
+;; --- holds
+
+(defn- violation-cell [v]
+  (str (span "critical" (esc (kw->s (:rule v)))) "<br>" (span "muted" (esc (:detail v)))))
+
+(defn- hard-hold-row [f]
+  (row (code (kw->s (:op f)))
+       (code (:subject f))
+       (esc (join-basis (:basis f)))
+       (str/join "<br>" (map violation-cell (:violations f)))))
+
+(defn- phase-hold-row [f]
+  (row (code (kw->s (:op f)))
+       (code (:subject f))
+       (code (:phase f))
+       (span "warn" (esc (kw->s (:phase-reason f))))
+       (if (seq (:violations f))
+         (span "critical" (esc (join-basis (:basis f))))
+         (span "muted" "空（governor は clean）"))))
+
+(defn- refusal-row [f]
+  (row (code (kw->s (:op f)))
+       (code (:subject f))
+       (esc (join-basis (:basis f)))
+       (span "warn" "人手承認の段階で却下 —— governor は通していた")))
+
+;; --- approver attribution
+
+(defn- attribution-row [db ledger {:keys [thread-id op subject submitted-by status disposition]}]
+  (let [{:keys [where record]} (committed-record-for db {:op op :subject subject})
+        fact (ledger-fact-for ledger {:op op :subject subject})
+        on-record (approver-entries record)
+        in-fact (approver-entries (when-not (:ambiguous fact) fact))]
+    (row (code thread-id)
+         (str (code (kw->s op)) " " (code subject))
+         (str (esc submitted-by) "<br>"
+              (span (if (= :approved status) "ok" "warn") (esc (kw->s status)))
+              " &rarr; " (span "muted" (esc (kw->s (or disposition :none)))))
+         (cond
+           (nil? record) (span "muted" "レコード無し（却下されたため）")
+           (seq on-record)
+           (span "ok" (str/join ", " (map (fn [[k v]] (str (esc (kw->s k)) "=" (esc v))) on-record)))
+           :else (span "warn" (str "保持されない<br>" (span "muted" (str "（監査のみ —— " (esc where) " のレコードに残らない）")))))
+         (cond
+           (:ambiguous fact) (span "warn" (str "曖昧な join（" (:ambiguous fact) " 件一致）—— 判定しない"))
+           (nil? fact) (span "muted" "commit fact 無し")
+           (seq in-fact) (span "ok" (str/join ", " (map (fn [[k v]] (str (esc (kw->s k)) "=" (esc v))) in-fact)))
+           :else (span "warn" "保持されない<br>" ))
+         (code where))))
+
+;; --- receipts / ledger
+
+(defn- receipt-row [r]
+  (row (code (get r "record_id"))
+       (code (get r "filing_id"))
+       (esc (get r "jurisdiction"))
+       (code (get r "procedure_id"))
+       (if (get r "immutable") (span "ok" "immutable") (span "warn" "mutable"))))
+
+(defn- ledger-row [f]
+  (row (esc (kw->s (:t f)))
+       (code (kw->s (:op f)))
+       (code (:subject f))
+       (esc (kw->s (or (:disposition f) :n-a)))
+       (esc (join-basis (:basis f)))))
+
+(defn render
+  "Renders the whole document from a store that has already run
+  `run-demo!` plus the approval handoffs it recorded."
+  [db approvals]
+  (let [ledger (vec (store/ledger db))
+        filings (store/all-filings db)
+        hard (hard-holds ledger)
+        phased (phase-holds ledger)
+        refused (approver-refusals ledger)
+        rule-kinds (sort (distinct (map kw->s (mapcat :basis hard))))]
+    (str
+     "<!doctype html>\n<html lang=\"ja\"><head><meta charset=\"utf-8\">"
+     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+     "<title>cloud-itonami-isic-8411-electoral &middot; electoral administration operator console</title><style>"
+     (jp-go-dds.skin/dds+skin)
+     "</style></head><body>\n"
+     "<header class=\"bar\">\n"
+     "  <h1>Electoral administration — filing receipt &amp; formal review (ISIC 8411) — Operator Console</h1>\n"
+     "  <span class=\"badge\">read-only sample · governor-gated · 受理台帳への登載は常に人手承認</span>\n"
+     "</header>\n"
+     "<main>\n"
+
+     (section "届出ディレクトリ"
+              (str "この repo の seed（<code>electoralops.store/demo-data</code>）そのもの。"
+                   "期限の列は提案が主張した値ではなく <code>electoralops.governor/deadline-ground-truth</code> が "
+                   "<code>senkyo.procedure</code> から<strong>再計算</strong>した ground truth である。"
+                   "受領者の列は <code>senkyo</code> の <code>:proc/received-by</code>。")
+              (table ["届出" "名称" "法域 / 手続き" "受領者" "期限判定（再計算）" "形式審査" "受理台帳" "直近の処理"]
+                     (map (partial filing-row ledger) filings)))
+
+     (section "ロールアウト phase"
+              (str "<code>electoralops.phase/phases</code> をそのまま表にしたもの。"
+                   "<code>:actuation/publish-receipt</code> は<strong>どの phase の :auto にも入っていない</strong> —— "
+                   "これは今後の milestone ではなく恒久的な構造で、governor の high-stakes ゲートが独立に同じ不変条件を強制する。")
+              (table ["phase" "label" "書き込み可" "auto-commit 可"]
+                     (map phase-row (sort-by key phase/phases))))
+
+     (section (str "この phase（" phase/default-phase "）での op ゲート")
+              "phase の :writes / :auto と governor の high-stakes 集合から導出（手書きの表ではない）。"
+              (table ["op" "この phase で書けるか" "承認の要否"]
+                     (map op-gate-row [:filing/receive :review/formal
+                                       :deficiency/notice :actuation/publish-receipt])))
+
+     (section (str "HARD governor holds（" (count hard) " 件 / " (count rule-kinds) " 種）")
+              (str "governor が<strong>拒否</strong>したもの。人手承認では通せず、"
+                   "承認ハンドオフに到達すらしない。発火した規則: "
+                   (str/join ", " (map code rule-kinds)) "。")
+              (table ["op" "届出" "基準（rule）" "違反の内容"]
+                     (map hard-hold-row hard)))
+
+     (section (str "ロールアウト phase による hold（" (count phased) " 件）")
+              (str "<strong>governor の拒否ではない。</strong> governor は clean で、"
+                   "その op がその phase でまだ有効化されていないだけ。"
+                   "<code>:violations</code> は空なので、素朴に hold を数えると"
+                   "この行が governor の拒否として混ざる —— だから表を分けている。")
+              (table ["op" "届出" "phase" "phase-reason" "violations"]
+                     (map phase-hold-row phased)))
+
+     (section (str "人手承認の段階での却下（" (count refused) " 件）")
+              (str "governor も phase も通した上で、人間の選挙管理職員が止めたもの。"
+                   "上の 2 つとさらに別の事象である。")
+              (table ["op" "届出" "基準" "説明"]
+                     (map refusal-row refused)))
+
+     (section "承認者の帰属（実行時に実測）"
+              (str "承認ハンドオフごとに、実際に書かれたレコードを"
+                   "<strong>approver を名乗るキーで深さ優先に走査</strong>した結果。"
+                   "現在の挙動を文字列で焼いていないので、store が承認者を保持するようになれば"
+                   "この表は自動で追従する。join は承認の thread-id で行い、"
+                   "<code>[op 届出]</code> では行わない（filing-1 は形式審査と受理台帳登載の"
+                   "両方を通るので、subject 単位の join は一方の承認者を他方に混入させる）。")
+              (table ["thread" "op / 届出" "承認" "SSoT レコード上の承認者" "監査台帳 fact 上の承認者" "参照先"]
+                     (map (partial attribution-row db ledger) approvals)))
+
+     (section "受理台帳（filing receipt register）"
+              (str "<code>electoralops.registry/register-receipt</code> が起案し、人手承認を経て"
+                   "commit されたもの。受理番号は法域スコープの連番で、国際標準は発明しない。"
+                   "証明書は常に UNSIGNED —— 署名は選挙管理機関自身の行為である。")
+              (table ["受理番号" "届出" "法域" "手続き" "性質"]
+                     (map receipt-row (store/receipt-history db))))
+
+     (section (str "監査台帳（この実行 / " (count ledger) " 事実）")
+              "append-only の決定事実ログ。commit も hold もちょうど 1 事実を残す。"
+              (table ["fact" "op" "届出" "disposition" "基準"]
+                     (map ledger-row ledger)))
+
+     "</main>\n"
+     "<footer>\n"
+     "  <p>Generated at build time by <code>electoralops.render-html</code> "
+     "(<code>clojure -M:render-html</code>) by running the real "
+     "<code>electoralops.operation</code> actor over "
+     "<code>electoralops.store/demo-data</code>. No hand-written rows, no timestamps — "
+     "two runs against the same seed are byte-identical.</p>\n"
+     "</footer>\n"
+     "</body></html>\n")))
+
+;; ----------------------------- entry point -----------------------------
+
+(defn -main [& args]
+  (let [out (or (first args) "docs/samples/operator-console.html")
+        {:keys [db approvals]} (run-demo!)
+        ledger (vec (store/ledger db))
+        hard (hard-holds ledger)
+        phased (phase-holds ledger)
+        committed (commits ledger)
+        seeded (set (map :id (store/all-filings db)))
+        stray (sort (remove seeded (distinct (keep :subject ledger))))]
+
+    ;; Build-time invariants. These run BEFORE the file is written: a
+    ;; console that cannot show the governor refusing is not publishable.
+    (when (zero? (count hard))
+      (throw (ex-info (str "refusing to write " out
+                           ": the run produced ZERO hard governor holds. "
+                           "A console with no refusal advertises an ungoverned actor. "
+                           "(phase-gate holds do NOT count — they carry empty :violations)")
+                      {:hard-holds 0 :phase-holds (count phased)
+                       :ledger-facts (count ledger)})))
+    (when (zero? (count committed))
+      (throw (ex-info (str "refusing to write " out ": the run produced ZERO commits")
+                      {:ledger-facts (count ledger)})))
+    (when (seq stray)
+      (throw (ex-info (str "refusing to write " out
+                           ": ledger names subjects that are not in the seeded filing directory")
+                      {:stray stray :seeded (sort seeded)})))
+
+    (spit out (render db approvals))
+    (println "wrote" out)
+    (println "  ledger facts       :" (count ledger))
+    (println "  commits            :" (count committed))
+    (println "  HARD governor holds:" (count hard)
+             (vec (sort (distinct (mapcat :basis hard)))))
+    (println "  phase-gate holds   :" (count phased)
+             (vec (sort (distinct (keep :phase-reason phased)))))
+    (println "  approver refusals  :" (count (approver-refusals ledger)))
+    (println "  receipts registered:" (count (store/receipt-history db)))))

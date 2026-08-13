@@ -300,14 +300,19 @@
   (let [{:keys [status within?]} (governor/deadline-ground-truth f store/demo-anchors)
         due (intake/due (:jurisdiction f) (:procedure-id f) store/demo-anchors)]
     (str (span (if within? "ok" "critical") (esc (kw->s status)))
-         "<br>" (span "muted" (str "期限 " (esc (if (keyword? due) (kw->s due) due))
+         "<br>" (span "muted" (str "期限 " (cond (nil? due) "—（spec-basis 無し）"
+                                                 (keyword? due) (esc (kw->s due))
+                                                 :else (esc due))
                                    " / 提出 " (esc (:submitted-epoch-day f)))))))
 
 (defn- review-cell [f]
   (let [items (intake/formal-review-items (:jurisdiction f) (:procedure-id f))
         outstanding (intake/outstanding-review-items f)]
     (cond
+      ;; 空ベクタと nil を同じにしない —— 「審査項目が無い」と「手続きを知らない」は違う
+      ;; (`electoralops.intake/formal-review-items`)
       (nil? items) (span "critical" "spec-basis 無し")
+      (empty? items) (span "muted" "この手続きに形式審査項目は無い")
       (empty? outstanding) (span "ok" (str "充足 " (count items) "/" (count items)))
       :else (str (span "warn" (str "充足 " (- (count items) (count outstanding))
                                    "/" (count items)))
@@ -417,7 +422,8 @@
            (:ambiguous fact) (span "warn" (str "曖昧な join（" (:ambiguous fact) " 件一致）—— 判定しない"))
            (nil? fact) (span "muted" "commit fact 無し")
            (seq in-fact) (span "ok" (str/join ", " (map (fn [[k v]] (str (esc (kw->s k)) "=" (esc v))) in-fact)))
-           :else (span "warn" "保持されない<br>" ))
+           :else (span "warn" (str "保持されない<br>"
+                                   (span "muted" "（監査のみ —— commit fact に承認者の欄が無い）"))))
          (code where))))
 
 ;; --- receipts / ledger
@@ -506,7 +512,12 @@
                    "現在の挙動を文字列で焼いていないので、store が承認者を保持するようになれば"
                    "この表は自動で追従する。join は承認の thread-id で行い、"
                    "<code>[op 届出]</code> では行わない（filing-1 は形式審査と受理台帳登載の"
-                   "両方を通るので、subject 単位の join は一方の承認者を他方に混入させる）。")
+                   "両方を通るので、subject 単位の join は一方の承認者を他方に混入させる）。"
+                   "<strong>監査台帳の <code>:actor</code> は承認者ではない</strong> —— "
+                   "あれは context の <code>:actor-id</code>（実行した actor）で、"
+                   "このデモではたまたま承認者と同じ <code>clerk-1</code> である。"
+                   "だからこの走査は approver を名乗るキーだけを数え、"
+                   "<code>:actor</code> を承認者として数えない。")
               (table ["thread" "op / 届出" "承認" "SSoT レコード上の承認者" "監査台帳 fact 上の承認者" "参照先"]
                      (map (partial attribution-row db ledger) approvals)))
 

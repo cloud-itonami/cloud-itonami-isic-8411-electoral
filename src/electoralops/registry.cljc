@@ -15,7 +15,7 @@
   ディシプリン（`partyops.registry/member-consensus-share-insufficient?` が
   position 自身の票数から比率を計算し直すのと同型）を、**提出日と法定期限**に
   当てはめたもの。提案が主張した期限は読まない。"
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [electoralops.intake :as intake]))
 
 (defn- unsigned-certificate
@@ -59,7 +59,7 @@
     (throw (ex-info "filing-receipt: procedure_id required" {})))
   (when (< sequence 0)
     (throw (ex-info "filing-receipt: sequence must be >= 0" {})))
-  (let [receipt-number (str (str/upper-case jurisdiction) "-RCPT-" (zero-pad sequence 6))
+  (let [receipt-number (str (str/upper jurisdiction) "-RCPT-" (zero-pad sequence 6))
         record {"record_id" receipt-number
                 "kind" "filing-receipt-draft"
                 "filing_id" filing-id

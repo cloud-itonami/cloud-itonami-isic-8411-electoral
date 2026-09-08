@@ -58,7 +58,7 @@
 
   Usage: `clojure -M:render-html [out-file]`
   (default `docs/samples/operator-console.html`)."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [clojure.walk :as walk]
             [jp-go-dds.skin]
             [electoralops.governor :as governor]

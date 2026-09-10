@@ -155,14 +155,14 @@ The demo's point is not that it runs; it is that it **stops**:
 
 | File | Role |
 |---|---|
-| `src/electoralops/intake.cljc` | **The receiving-side reading of `senkyo.procedure`** — receivable-here, formal-review items, independent deadline recomputation, the extended out-of-scope set |
-| `src/electoralops/store.cljc` | **Store** protocol — `MemStore` ‖ `DatomicStore` (`langchain.db`) + append-only audit ledger + receipt register |
-| `src/electoralops/registry.cljc` | Filing-receipt draft records (unsigned — signature is the authority's own act) + `submitted-within-deadline?` ground-truth recompute |
-| `src/electoralops/electoralopsllm.cljc` | **ElectoralOps-LLM** — `mock-advisor` ‖ `llm-advisor` |
-| `src/electoralops/governor.cljc` | **Electoral Administration Governor** — 6 HARD checks + 1 soft |
-| `src/electoralops/phase.cljc` | **Phase 0→3** — read-only → assisted intake → assisted review → supervised |
-| `src/electoralops/operation.cljc` | **OperationActor** — langgraph StateGraph |
-| `src/electoralops/sim.cljc` | demo driver |
+| `src/electoralops/intake.kotoba` | **The receiving-side reading of `senkyo.procedure`** — receivable-here, formal-review items, independent deadline recomputation, the extended out-of-scope set |
+| `src/electoralops/store.kotoba` | **Store** protocol — `MemStore` ‖ `DatomicStore` (`langchain.db`) + append-only audit ledger + receipt register |
+| `src/electoralops/registry.kotoba` | Filing-receipt draft records (unsigned — signature is the authority's own act) + `submitted-within-deadline?` ground-truth recompute |
+| `src/electoralops/electoralopsllm.kotoba` | **ElectoralOps-LLM** — `mock-advisor` ‖ `llm-advisor` |
+| `src/electoralops/governor.kotoba` | **Electoral Administration Governor** — 6 HARD checks + 1 soft |
+| `src/electoralops/phase.kotoba` | **Phase 0→3** — read-only → assisted intake → assisted review → supervised |
+| `src/electoralops/operation.kotoba` | **OperationActor** — langgraph StateGraph |
+| `src/electoralops/sim.kotoba` | demo driver |
 | `test/electoralops/*_test.clj` | governor contract · intake/deadline semantics · phase invariants · store parity |
 
 ## Jurisdiction coverage (honest)

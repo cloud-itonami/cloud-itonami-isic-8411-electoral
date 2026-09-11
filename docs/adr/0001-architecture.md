@@ -108,9 +108,9 @@ auto 対象は `:filing/receive`（書類が届いたという記録）だけ。
 
 ## Verification
 
-- 33 tests / 160 assertions green（`clojure -M:test`）
-- clj-kondo 0 errors / 0 warnings（`clojure -M:lint`）
-- `clojure -M:dev:run` で clean 3 件 + HARD hold 5 件が実際に期待どおりの
+- 33 tests / 160 assertions green（`kbb -M:test`）
+- clj-kondo 0 errors / 0 warnings（`kbb -M:lint`）
+- `kbb -M:dev:run` で clean 3 件 + HARD hold 5 件が実際に期待どおりの
   disposition になることを確認
 - 落ちることの確認: `blocking-deadline-statuses` を `#{:past}` に縮め、
   `:actuation/publish-receipt` を phase 3 の `:auto` に入れると **7 件**

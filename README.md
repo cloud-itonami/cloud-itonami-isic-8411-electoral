@@ -136,9 +136,9 @@ document arrived does not itself change anyone's standing.
 ## Run
 
 ```bash
-clojure -M:dev:run     # one clean lifecycle + five HARD-hold cases
-clojure -M:test        # 33 tests / 160 assertions
-clojure -M:lint        # clj-kondo, errors fail
+kbb -M:dev:run     # one clean lifecycle + five HARD-hold cases
+kbb -M:test        # 33 tests / 160 assertions
+kbb -M:lint        # clj-kondo, errors fail
 ```
 
 The demo's point is not that it runs; it is that it **stops**:

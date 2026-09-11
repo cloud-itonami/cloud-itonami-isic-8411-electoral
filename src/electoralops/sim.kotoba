@@ -2,7 +2,7 @@
   "Demo driver —— 1 つの clean な受領ライフサイクルと、5 つの HARD-hold ケースを
   実際に actor へ通す。
 
-    clojure -M:dev:run
+    kbb -M:dev:run
 
   ここで見せたいのは『動く』ことではなく、**止まる**ことである。受領側の
   actor が黙って通してしまうと最も危ういのは、期限を確認できないまま受理する

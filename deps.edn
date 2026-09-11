@@ -33,9 +33,9 @@
   :dev {:override-deps
         {io.github.kotoba-lang/langchain
          {:local/root "../../kotoba-lang/langchain"}}}
-  ;; clojure -M:dev:run  -> drive the demo through one OperationActor
+  ;; kbb -M:dev:run  -> drive the demo through one OperationActor
   :run {:main-opts ["-m" "electoralops.sim"]}
-  ;; clojure -M:render-html [out-file] -> regenerate
+  ;; kbb -M:render-html [out-file] -> regenerate
   ;; docs/samples/operator-console.html by running the REAL actor
   ;; (flagship checklist item 2). Refuses to write the file if the run
   ;; produced no hard governor holds.

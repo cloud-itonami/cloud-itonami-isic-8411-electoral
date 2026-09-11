@@ -56,7 +56,7 @@
   Deterministic: no timestamps, no randomness, sorted iteration
   throughout — two runs against the same seed are byte-identical.
 
-  Usage: `clojure -M:render-html [out-file]`
+  Usage: `kbb -M:render-html [out-file]`
   (default `docs/samples/operator-console.html`)."
   (:require [kotoba.lang.text :as str]
             [clojure.walk :as walk]
@@ -536,7 +536,7 @@
      "</main>\n"
      "<footer>\n"
      "  <p>Generated at build time by <code>electoralops.render-html</code> "
-     "(<code>clojure -M:render-html</code>) by running the real "
+     "(<code>kbb -M:render-html</code>) by running the real "
      "<code>electoralops.operation</code> actor over "
      "<code>electoralops.store/demo-data</code>. No hand-written rows, no timestamps — "
      "two runs against the same seed are byte-identical.</p>\n"

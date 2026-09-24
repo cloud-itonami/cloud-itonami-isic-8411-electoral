@@ -1,0 +1,36 @@
+;; What this vertical's robot physically does, declared for
+;; kotoba.robotics.process (kotoba-lang/robotics). `kbb -M:dev:physics` runs it.
+;;
+;; This repo's README has no "Robotics premise" section; blueprint.edn
+;; declares :itonami.blueprint/robotics true. The actor is the receiving side
+;; of an election (ISIC 8411, electoral administration): filing receipt,
+;; formal review, deficiency notice and entry in the public register. The
+;; physical work of that receiving side is paper: lifting boxes of
+;; nomination-signature petitions from the filer's trolley onto the receiving
+;; bench, and carrying received filings from the filing counter to the
+;; secure records vault within the custody window.
+;;
+;; Every number without a cited source is marked `estimate` in its :basis.
+;; Replacing an estimate with a sourced value is this bot's growth work.
+{:physics/schema "itonami.physical-ai.spec.v1"
+ :repo "cloud-itonami/cloud-itonami-isic-8411-electoral"
+ :cases
+ [{:id :petition-box-onto-receiving-bench
+   :kind :manipulator
+   :procedure "receiving arm lifts a box of nomination-signature petitions from the filer's trolley onto the receiving bench for counting"
+   :params {:l1-m 0.65 :l2-m 0.55 :m1-kg 7.0 :m2-kg 4.5
+            :from [0.65 -0.30] :to [0.55 0.25] :duration-s 2.5 :steps 500}
+   :sweep {:param :payload-kg :values [3.0 6.0 9.0 12.0 15.0]}
+   :quantity :peak-tau1-nm
+   :limit {:max 150.0 :basis "estimate: continuous shoulder torque of a 10-15 kg payload class collaborative arm"}
+   :boundary {:lo 0.5 :hi 40.0}}
+  {:id :filings-to-records-vault
+   :kind :transport
+   :procedure "custody robot carries received filings from the filing counter to the secure records vault"
+   :params {:mass-kg 40.0 :payload-kg 10.0 :v-max-mps 1.0 :a-max-mps2 0.5
+            :brake-decel-mps2 0.8 :drive-force-n 80.0 :crr 0.02
+            :cog-height-m 0.50 :support-half-length-m 0.25 :max-time-s 1800.0}
+   :sweep {:param :distance-m :values [20.0 50.0 90.0 140.0 200.0]}
+   :quantity :cycle-time-s
+   :limit {:max 120.0 :basis "estimate: a received filing should be under vault custody within 2 minutes of its receipt time-stamp"}
+   :boundary {:lo 5.0 :hi 400.0}}]}
